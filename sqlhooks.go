@@ -195,6 +195,9 @@ func (conn *ExecerContext) ExecContext(ctx context.Context, query string, args [
 	}
 
 	results, err := conn.execContext(ctx, query, args)
+	if err == driver.ErrSkip && len(args) > 0 {
+		results, err = conn.prepareExec(ctx, query, args)
+	}
 	if err != nil {
 		return results, handlerErr(ctx, conn.hooks, err, query, list...)
 	}
@@ -204,6 +207,16 @@ func (conn *ExecerContext) ExecContext(ctx context.Context, query string, args [
 	}
 
 	return results, err
+}
+
+func (conn *Conn) prepareExec(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	stmt, err := conn.PrepareContext(ctx, query)
+	defer stmt.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return stmt.(*Stmt).execContext(ctx, args)
 }
 
 func (conn *ExecerContext) Exec(query string, args []driver.Value) (driver.Result, error) {
@@ -257,6 +270,9 @@ func (conn *QueryerContext) QueryContext(ctx context.Context, query string, args
 	}
 
 	results, err := conn.queryContext(ctx, query, args)
+	if err == driver.ErrSkip && len(args) > 0 {
+		results, err = conn.prepareQuery(ctx, query, args)
+	}
 	if err != nil {
 		return results, handlerErr(ctx, conn.hooks, err, query, list...)
 	}
@@ -266,6 +282,34 @@ func (conn *QueryerContext) QueryContext(ctx context.Context, query string, args
 	}
 
 	return results, err
+}
+
+func (conn *Conn) prepareQuery(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	stmt, err := conn.PrepareContext(ctx, query)
+	if err != nil {
+		stmt.Close()
+		return nil, err
+	}
+
+	result, err := stmt.(*Stmt).queryContext(ctx, args)
+	if err != nil {
+		stmt.Close()
+		return nil, err
+	}
+
+	return rows{Rows: result, closeStmt: stmt.Close}, nil
+}
+
+type rows struct {
+	driver.Rows
+	closeStmt func() error
+}
+
+func (r rows) Close() error {
+	if err := r.Rows.Close(); err != nil {
+		return err
+	}
+	return r.closeStmt()
 }
 
 // ExecerQueryerContext implements database/sql.driver.ExecerContext and
